@@ -128,22 +128,15 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          second=0, microsecond=0)
     status = "HADIR" if now <= ontime else "TELAT"
 
-    # ambil foto resolusi tertinggi
+    # Foto TIDAK disimpan permanen. Kita simpan file_id-nya saja (ringan, tahan
+    # restart). Jam 9 bot mengambil ulang foto via file_id dan menyusun kolase.
     photo = update.message.photo[-1]
-    tg_file = await context.bot.get_file(photo.file_id)
-    image_bytes = bytes(await tg_file.download_as_bytearray())
-
-    fname = f"{today}_{tek['nama'].replace(' ', '_')}.jpg"
-    try:
-        link = sheets.upload_foto(image_bytes, fname)
-    except Exception as e:
-        log.exception("Upload Drive gagal")
-        link = "(upload gagal)"
+    file_id = photo.file_id
 
     sheets.record_absensi(
         tanggal=today, nama=tek["nama"], nik=tek.get("nik", ""),
         sektor=tek.get("sektor", ""), jam=jam, status=status,
-        link_foto=link, user_id=user.id,
+        link_foto="", user_id=user.id, file_id=file_id,
     )
 
     emoji = "✅" if status == "HADIR" else "⚠️"
@@ -211,16 +204,129 @@ def _build_rekap_text(today):
     return "\n".join(lines)
 
 
+async def _buat_kolase(context, records):
+    """Ambil foto dari file_id tiap absensi, susun jadi satu kolase grid.
+    Return BytesIO (JPEG) atau None kalau tidak ada foto.
+
+    Foto diambil ulang dari Telegram via file_id -- tidak ada penyimpanan
+    permanen. Tiap sel diberi label nama di bawahnya.
+    """
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+
+    # kumpulkan (nama, bytes foto)
+    fotos = []
+    for r in records:
+        fid = str(r.get("file_id", "")).strip()
+        if not fid:
+            continue
+        try:
+            tg_file = await context.bot.get_file(fid)
+            data = bytes(await tg_file.download_as_bytearray())
+            img = Image.open(BytesIO(data)).convert("RGB")
+            fotos.append((r.get("nama", "-"), img))
+        except Exception:
+            log.exception("Gagal ambil foto file_id=%s", fid[:20])
+
+    if not fotos:
+        return None
+
+    # ukuran sel & grid
+    cell_w, cell_h = 300, 300           # area foto per sel
+    label_h = 26                        # ruang nama di bawah tiap foto
+    pad = 6
+    n = len(fotos)
+    cols = min(6, max(1, int(n ** 0.5) + 1))   # grid mendekati persegi, maks 6 kolom
+    rows = (n + cols - 1) // cols
+
+    total_w = cols * cell_w + (cols + 1) * pad
+    total_h = rows * (cell_h + label_h) + (rows + 1) * pad
+    canvas = Image.new("RGB", (total_w, total_h), (245, 245, 245))
+    draw = ImageDraw.Draw(canvas)
+    font = _load_font(16)
+
+    for idx, (nama, img) in enumerate(fotos):
+        rr, cc = divmod(idx, cols)
+        x = pad + cc * (cell_w + pad)
+        y = pad + rr * (cell_h + label_h + pad)
+
+        # fit foto ke dalam sel (crop tengah agar rasio pas)
+        img_fit = _crop_center(img, cell_w, cell_h)
+        canvas.paste(img_fit, (x, y))
+
+        # label nama (dipotong kalau kepanjangan)
+        label = nama if len(nama) <= 22 else nama[:20] + "…"
+        draw.text((x + 4, y + cell_h + 4), label, fill=(20, 20, 20), font=font)
+
+    out = BytesIO()
+    canvas.save(out, format="JPEG", quality=80)
+    out.seek(0)
+    out.name = "kolase.jpg"
+    return out
+
+
+def _load_font(size):
+    """Cari font TrueType di beberapa lokasi umum; fallback ke default Pillow."""
+    from PIL import ImageFont
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/nix/store/dejavu-fonts/share/fonts/truetype/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _crop_center(img, w, h):
+    """Resize+crop tengah agar mengisi w×h tanpa distorsi."""
+    from PIL import Image
+    src_ratio = img.width / img.height
+    dst_ratio = w / h
+    if src_ratio > dst_ratio:
+        new_h = h
+        new_w = int(h * src_ratio)
+    else:
+        new_w = w
+        new_h = int(w / src_ratio)
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    left = (new_w - w) // 2
+    top = (new_h - h) // 2
+    return img.crop((left, top, left + w, top + h))
+
+
 async def kirim_rekap(context: ContextTypes.DEFAULT_TYPE):
     group_id = _resolve_group_id()
     if not group_id:
         log.warning("group_chat_id belum diset; rekap tidak dikirim.")
         return
-    text = _build_rekap_text(_today_str())
-    await context.bot.send_message(
-        chat_id=int(group_id), text=text, parse_mode="Markdown"
-    )
+    await _kirim_rekap_ke(context, int(group_id))
     log.info("Rekap terkirim ke grup %s", group_id)
+
+
+async def _kirim_rekap_ke(context, chat_id):
+    """Kirim teks rekap + kolase foto ke chat_id."""
+    today = _today_str()
+    records = sheets.get_absensi_for_date(today)
+    text = _build_rekap_text(today)
+
+    # kirim teks rekap dulu
+    await context.bot.send_message(chat_id, text, parse_mode="Markdown")
+
+    # lalu kolase foto (kalau ada)
+    try:
+        kolase = await _buat_kolase(context, records)
+        if kolase:
+            await context.bot.send_photo(
+                chat_id, photo=kolase,
+                caption=f"📸 Kolase foto absen — {len(records)} peserta",
+            )
+    except Exception:
+        log.exception("Gagal membuat/mengirim kolase")
 
 
 async def rekap_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,8 +337,8 @@ async def rekap_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Grup tujuan belum diset. Ketik /setgrup di grup dulu."
         )
         return
-    text = _build_rekap_text(_today_str())
-    await context.bot.send_message(int(group_id), text, parse_mode="Markdown")
+    await update.message.reply_text("Menyusun rekap + kolase, mohon tunggu…")
+    await _kirim_rekap_ke(context, int(group_id))
     await update.message.reply_text("Rekap dikirim ke grup.")
 
 
