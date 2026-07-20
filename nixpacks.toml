@@ -1,0 +1,3 @@
+# Pastikan font TrueType tersedia di container untuk label kolase.
+[phases.setup]
+aptPkgs = ["fonts-dejavu-core"]
