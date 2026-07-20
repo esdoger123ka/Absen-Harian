@@ -33,3 +33,4 @@ WORK_DAYS = [int(d) for d in os.environ.get("WORK_DAYS", "0,1,2,3,4,5").split(",
 TAB_TEKNISI = "teknisi"
 TAB_ABSENSI = "absensi"
 TAB_CONFIG = "config"   # untuk simpan group_chat_id yang dideteksi runtime
+TAB_JADWAL = "jadwal"   # acuan siapa yang dijadwalkan hadir per tanggal
