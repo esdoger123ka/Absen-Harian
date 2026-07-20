@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]==21.6
+gspread==6.1.2
+google-auth==2.35.0
+google-api-python-client==2.147.0
+pytz==2024.2
