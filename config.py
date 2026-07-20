@@ -7,7 +7,6 @@ import os
 # --- Wajib diisi di Railway Variables ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]                 # token dari @BotFather
 SHEET_ID = os.environ["SHEET_ID"]                   # ID Google Sheet (dari URL)
-DRIVE_FOLDER_ID = os.environ["DRIVE_FOLDER_ID"]     # folder Drive tujuan simpan foto
 # credentials service account: isi seluruh JSON sebagai satu env var
 GOOGLE_CREDS_JSON = os.environ["GOOGLE_CREDS_JSON"]
 
