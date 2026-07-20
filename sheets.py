@@ -8,13 +8,15 @@ Struktur Sheet yang diharapkan:
   Tab 'absensi'  : kolom -> tanggal | nama | nik | sektor | jam | status | link_foto | user_id
   Tab 'config'   : kolom -> key | value   (menyimpan group_chat_id runtime)
 """
+import io
 import json
+import time
 import datetime as dt
 
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaInMemoryUpload
+from googleapiclient.http import MediaIoBaseUpload
 
 import config
 
@@ -122,16 +124,42 @@ def get_config(key, default=None):
 
 
 # ---------- Drive ----------
-def upload_foto(image_bytes, filename):
-    """Upload foto ke folder Drive, return link view. File dibuat 'anyone with
-    link can view' agar link di Sheet bisa dibuka koordinator."""
-    media = MediaInMemoryUpload(image_bytes, mimetype="image/jpeg")
+def upload_foto(image_bytes, filename, max_retry=3):
+    """Upload foto ke folder Drive (resumable + retry), return link view.
+
+    Resumable upload mengirim file dalam potongan dan bisa melanjutkan kalau
+    koneksi putus di tengah -- ini mengatasi BrokenPipeError yang terjadi pada
+    upload single-shot untuk file besar dari HP.
+    """
     meta = {"name": filename, "parents": [config.DRIVE_FOLDER_ID]}
-    f = _drive.files().create(
-        body=meta, media_body=media, fields="id"
-    ).execute()
-    file_id = f["id"]
-    _drive.permissions().create(
-        fileId=file_id, body={"role": "reader", "type": "anyone"}
-    ).execute()
-    return f"https://drive.google.com/file/d/{file_id}/view"
+
+    last_err = None
+    for attempt in range(1, max_retry + 1):
+        try:
+            media = MediaIoBaseUpload(
+                io.BytesIO(image_bytes),
+                mimetype="image/jpeg",
+                chunksize=1024 * 1024,   # 1 MB per chunk
+                resumable=True,
+            )
+            request = _drive.files().create(
+                body=meta, media_body=media, fields="id"
+            )
+            response = None
+            while response is None:
+                _status, response = request.next_chunk()
+            file_id = response["id"]
+
+            _drive.permissions().create(
+                fileId=file_id, body={"role": "reader", "type": "anyone"}
+            ).execute()
+            return f"https://drive.google.com/file/d/{file_id}/view"
+
+        except (BrokenPipeError, ConnectionError, OSError) as e:
+            last_err = e
+            if attempt < max_retry:
+                time.sleep(2 * attempt)   # backoff: 2s, 4s
+                continue
+            raise
+
+    raise last_err
