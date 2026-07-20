@@ -1,35 +1,30 @@
 """
-Lapisan akses data: Google Sheets (daftar teknisi, catatan absensi) + upload
-foto ke Google Drive. Memakai satu service account.
+Lapisan akses data: Google Sheets (daftar teknisi, catatan absensi).
+Foto TIDAK disimpan di Drive (service account tidak punya kuota storage) —
+foto diarsipkan ke grup Telegram, ditangani di bot.py.
 
 Struktur Sheet yang diharapkan:
   Tab 'teknisi'  : kolom -> nama | nik | user_id | sektor
                    (user_id boleh kosong; diisi otomatis saat teknisi daftar)
   Tab 'absensi'  : kolom -> tanggal | nama | nik | sektor | jam | status | link_foto | user_id
-  Tab 'config'   : kolom -> key | value   (menyimpan group_chat_id runtime)
+  Tab 'config'   : kolom -> key | value   (menyimpan group_chat_id & arsip runtime)
 """
-import io
 import json
-import time
 import datetime as dt
 
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 import config
 
 _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
 ]
 
 _creds = Credentials.from_service_account_info(
     json.loads(config.GOOGLE_CREDS_JSON), scopes=_SCOPES
 )
 _gc = gspread.authorize(_creds)
-_drive = build("drive", "v3", credentials=_creds)
 _ss = _gc.open_by_key(config.SHEET_ID)
 
 
@@ -42,7 +37,7 @@ def _ws(tab_name):
         if tab_name == config.TAB_ABSENSI:
             ws.append_row(
                 ["tanggal", "nama", "nik", "sektor", "jam",
-                 "status", "link_foto", "user_id"]
+                 "status", "link_foto", "user_id", "file_id"]
             )
         elif tab_name == config.TAB_TEKNISI:
             ws.append_row(["nama", "nik", "user_id", "sektor"])
@@ -94,9 +89,11 @@ def already_absent_today(user_id, today_str):
     return False
 
 
-def record_absensi(tanggal, nama, nik, sektor, jam, status, link_foto, user_id):
+def record_absensi(tanggal, nama, nik, sektor, jam, status, link_foto,
+                   user_id, file_id=""):
     _ws(config.TAB_ABSENSI).append_row(
-        [tanggal, nama, str(nik), sektor, jam, status, link_foto, str(user_id)]
+        [tanggal, nama, str(nik), sektor, jam, status, link_foto,
+         str(user_id), file_id]
     )
 
 
@@ -121,45 +118,3 @@ def get_config(key, default=None):
         if row.get("key") == key:
             return row.get("value")
     return default
-
-
-# ---------- Drive ----------
-def upload_foto(image_bytes, filename, max_retry=3):
-    """Upload foto ke folder Drive (resumable + retry), return link view.
-
-    Resumable upload mengirim file dalam potongan dan bisa melanjutkan kalau
-    koneksi putus di tengah -- ini mengatasi BrokenPipeError yang terjadi pada
-    upload single-shot untuk file besar dari HP.
-    """
-    meta = {"name": filename, "parents": [config.DRIVE_FOLDER_ID]}
-
-    last_err = None
-    for attempt in range(1, max_retry + 1):
-        try:
-            media = MediaIoBaseUpload(
-                io.BytesIO(image_bytes),
-                mimetype="image/jpeg",
-                chunksize=1024 * 1024,   # 1 MB per chunk
-                resumable=True,
-            )
-            request = _drive.files().create(
-                body=meta, media_body=media, fields="id"
-            )
-            response = None
-            while response is None:
-                _status, response = request.next_chunk()
-            file_id = response["id"]
-
-            _drive.permissions().create(
-                fileId=file_id, body={"role": "reader", "type": "anyone"}
-            ).execute()
-            return f"https://drive.google.com/file/d/{file_id}/view"
-
-        except (BrokenPipeError, ConnectionError, OSError) as e:
-            last_err = e
-            if attempt < max_retry:
-                time.sleep(2 * attempt)   # backoff: 2s, 4s
-                continue
-            raise
-
-    raise last_err
