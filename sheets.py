@@ -43,6 +43,8 @@ def _ws(tab_name):
             ws.append_row(["nama", "nik", "user_id", "sektor"])
         elif tab_name == config.TAB_CONFIG:
             ws.append_row(["key", "value"])
+        elif tab_name == config.TAB_JADWAL:
+            ws.append_row(["tanggal", "nama"])
         return ws
 
 
@@ -100,6 +102,19 @@ def record_absensi(tanggal, nama, nik, sektor, jam, status, link_foto,
 def get_absensi_for_date(today_str):
     return [r for r in _ws(config.TAB_ABSENSI).get_all_records()
             if r.get("tanggal") == today_str]
+
+
+# ---------- Jadwal ----------
+def get_jadwal_for_date(today_str):
+    """Return list nama yang dijadwalkan hadir pada tanggal tertentu.
+    Tanggal dicocokkan sebagai string YYYY-MM-DD."""
+    names = []
+    for row in _ws(config.TAB_JADWAL).get_all_records():
+        if str(row.get("tanggal", "")).strip() == today_str:
+            nama = str(row.get("nama", "")).strip()
+            if nama:
+                names.append(nama)
+    return names
 
 
 # ---------- Config runtime (group chat id) ----------
