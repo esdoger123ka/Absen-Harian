@@ -165,15 +165,21 @@ def _resolve_group_id():
 def _build_rekap_text(today):
     records = sheets.get_absensi_for_date(today)
     all_tek = sheets.get_all_teknisi()
+    jadwal_names = sheets.get_jadwal_for_date(today)   # nama dijadwalkan hari ini
 
-    absen_uid = {str(r.get("user_id")) for r in records}
     hadir = [r for r in records if r.get("status") == "HADIR"]
     telat = [r for r in records if r.get("status") == "TELAT"]
 
-    # teknisi terdaftar yang belum absen
-    belum = [t for t in all_tek
-             if str(t.get("user_id", "")).strip()
-             and str(t["user_id"]) not in absen_uid]
+    # peta nama -> sektor (untuk menampilkan sektor pada 'belum absen')
+    sektor_by_name = {t["nama"].strip().lower(): t.get("sektor", "-")
+                      for t in all_tek}
+
+    # nama yang sudah absen hari ini (case-insensitive)
+    absen_names = {str(r.get("nama", "")).strip().lower() for r in records}
+
+    # BELUM ABSEN = dijadwalkan hari ini TAPI belum absen
+    belum = [n for n in jadwal_names
+             if n.strip().lower() not in absen_names]
 
     tgl_id = _now().strftime("%d %B %Y")
     lines = [f"📋 *REKAP MORNING BRIEFING RJW*", f"Tanggal: {tgl_id}", ""]
@@ -192,15 +198,23 @@ def _build_rekap_text(today):
         lines.append("  -")
 
     lines.append("")
-    lines.append(f"❌ *BELUM ABSEN ({len(belum)})*")
-    for t in sorted(belum, key=lambda x: x.get("sektor", "")):
-        lines.append(f"  • {t['nama']} — {t.get('sektor','-')}")
-    if not belum:
-        lines.append("  -")
+    if not jadwal_names:
+        # jadwal hari ini belum diisi -> beri tahu, jangan tampilkan angka menyesatkan
+        lines.append("❌ *BELUM ABSEN (?)*")
+        lines.append("  ⚠️ Jadwal hari ini belum diisi di tab 'jadwal'.")
+    else:
+        lines.append(f"❌ *BELUM ABSEN ({len(belum)})*")
+        for nama in sorted(belum, key=lambda n: sektor_by_name.get(n.strip().lower(), "")):
+            sektor = sektor_by_name.get(nama.strip().lower(), "-")
+            lines.append(f"  • {nama} — {sektor}")
+        if not belum:
+            lines.append("  -")
 
-    total_terdaftar = len([t for t in all_tek if str(t.get('user_id','')).strip()])
     lines.append("")
-    lines.append(f"Total absen: {len(records)}/{total_terdaftar} terdaftar")
+    if jadwal_names:
+        lines.append(f"Total hadir: {len(records)}/{len(jadwal_names)} dijadwalkan")
+    else:
+        lines.append(f"Total absen: {len(records)}")
     return "\n".join(lines)
 
 
