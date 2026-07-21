@@ -377,12 +377,16 @@ async def _daily_job(context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
+    # start, status, dan foto HANYA diproses di chat pribadi (bukan grup)
+    priv = filters.ChatType.PRIVATE
+    app.add_handler(CommandHandler("start", start, filters=priv))
+    app.add_handler(CommandHandler("status", status, filters=priv))
+    # setgrup & rekap memang dijalankan di grup, jadi tidak dibatasi
     app.add_handler(CommandHandler("setgrup", set_grup))
     app.add_handler(CommandHandler("rekap", rekap_manual))
     app.add_handler(CallbackQueryHandler(on_register_choice, pattern=r"^reg::"))
-    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
+    # foto absen hanya diterima dari chat pribadi
+    app.add_handler(MessageHandler(filters.PHOTO & priv, on_photo))
 
     # jadwal harian jam cutoff
     cutoff = dt.time(hour=config.CUTOFF_HOUR, minute=config.CUTOFF_MINUTE,
